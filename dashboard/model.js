@@ -32,15 +32,27 @@ window.RadarModel = (function () {
     return params.family_of_category[category] || 'other';
   }
 
-  // Rebuild the anchors from the trading rows alone: each contributes
-  // ln(clamp(mcap / TVL, 0.005, 5)); medians shrink category -> family ->
-  // global with K pseudo-samples of the parent at each level.
+  // Rebuild the anchors from the trading rows alone. A trading row only
+  // teaches the anchors when its multiple is plausible and its TVL large
+  // enough to mean anything: a mcap/TVL ratio outside the sample band is
+  // dropped outright (never clamped into the sample — clamping a 400x
+  // multiple to 5x still lets it shout), and so is a trading TVL under the
+  // sample floor. The survivors contribute ln(mcap / TVL); medians shrink
+  // category -> family -> global with K pseudo-samples of the parent.
   function computeAnchors(radar) {
     var params = radar.params;
+    var rule = params.anchor_sample || { ratio_min: 0.005, ratio_max: 5, min_tvl_usd: 10000000 };
     var catLogs = {}, famLogs = {}, allLogs = [];
+    var used = 0, dropped = 0;
     radar.trading.forEach(function (t) {
       if (t.category !== null && EXCLUDED[t.category]) return;
-      var log = Math.log(clamp(t.mcap_usd / t.tvl_usd, 0.005, 5));
+      var ratio = t.mcap_usd / t.tvl_usd;
+      if (ratio < rule.ratio_min || ratio > rule.ratio_max || t.tvl_usd < rule.min_tvl_usd) {
+        dropped++;
+        return;
+      }
+      used++;
+      var log = Math.log(ratio);
       var key = t.category === null ? '(none)' : t.category;
       (catLogs[key] = catLogs[key] || []).push(log);
       var fam = familyOf(params, t.category);
@@ -71,7 +83,24 @@ window.RadarModel = (function () {
         family: fam
       };
     });
-    return { globalLog: globalLog, categories: categories };
+    return { globalLog: globalLog, categories: categories, used: used, dropped: dropped };
+  }
+
+  // Whole days between two UTC calendar dates given as YYYY-MM-DD.
+  function daysBetween(fromDate, toDate) {
+    function parse(s) {
+      var p = s.split('-');
+      return Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+    }
+    return Math.round((parse(toDate) - parse(fromDate)) / 86400000);
+  }
+
+  // The tokenless age, derived here from the listing date and the
+  // snapshot's own as-of date — never read off the row's stored figure.
+  // An unreported listing date counts as 180 days, as the build took it.
+  function ageDaysFor(radar, row) {
+    if (row.listed_at === null || row.listed_at === undefined) return 180;
+    return daysBetween(row.listed_at, radar.meta.as_of);
   }
 
   function momentumFactor(change7d) {
@@ -85,25 +114,35 @@ window.RadarModel = (function () {
     return 0.70 + 0.45 * t;
   }
 
-  // One row, recomputed end to end from its raw fields.
+  // One row, recomputed end to end from its raw fields: the family is
+  // derived from its category, the tokenless age from its listing date,
+  // so nothing the build precomputed is taken on trust.
   function impliedFor(radar, anchors, row) {
     var key = row.category === null ? '(none)' : row.category;
     var cat = anchors.categories[key];
     var anchor = cat ? cat.anchor : Math.exp(anchors.globalLog);
-    var fdv = row.tvl_usd * anchor * momentumFactor(row.change_7d) * tokenlessFactor(row.age_days);
-    var pool = fdv * radar.params.airdrop_share[row.family];
+    var family = familyOf(radar.params, row.category);
+    var fdv = row.tvl_usd * anchor * momentumFactor(row.change_7d) *
+      tokenlessFactor(ageDaysFor(radar, row));
+    var pool = fdv * radar.params.airdrop_share[family];
     return { anchor: anchor, fdv: fdv, pool: pool, implied: Math.max(1, Math.round(pool)) };
   }
 
   // The page's honesty check: every row, recomputed, within one dollar of
-  // the value the build wrote (the dollar is for rounding at the edges).
+  // the value the build wrote (the dollar is for rounding at the edges),
+  // and the board's order itself: implied value must never rise as the
+  // rank number grows.
   function verifyAll(radar, anchors) {
     var bad = [];
+    var ordered = true;
+    var prev = Infinity;
     radar.rows.forEach(function (row) {
       var got = impliedFor(radar, anchors, row).implied;
       if (Math.abs(got - row.implied_value_usd) > 1) bad.push(row.slug);
+      if (row.implied_value_usd > prev) ordered = false;
+      prev = row.implied_value_usd;
     });
-    return { ok: radar.rows.length - bad.length, total: radar.rows.length, bad: bad };
+    return { ok: radar.rows.length - bad.length, total: radar.rows.length, bad: bad, ordered: ordered };
   }
 
   return {
@@ -111,6 +150,8 @@ window.RadarModel = (function () {
     median: median,
     familyOf: familyOf,
     computeAnchors: computeAnchors,
+    daysBetween: daysBetween,
+    ageDaysFor: ageDaysFor,
     momentumFactor: momentumFactor,
     tokenlessFactor: tokenlessFactor,
     impliedFor: impliedFor,

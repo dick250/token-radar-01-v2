@@ -22,7 +22,12 @@ window.RadarChart = (function () {
   function buildScatter(container, rows, onPick) {
     var W = 880, H = 248, L = 66, R = 14, T = 10, B = 30;
     var iw = W - L - R, ih = H - T - B;
-    var xMax = 1500;
+    // The x axis ends at the oldest board row, rounded up to the next
+    // 250 days, so the long-lived protocols spread across the plot
+    // instead of piling onto its right edge.
+    var maxAge = 0;
+    rows.forEach(function (r) { if (r.age_days > maxAge) maxAge = r.age_days; });
+    var xMax = Math.max(500, Math.ceil(maxAge / 250) * 250);
     var yLo = Math.log10(5e6), yHi = Math.log10(5e9);
     var maxImplied = 0;
     rows.forEach(function (r) { if (r.implied_value_usd > maxImplied) maxImplied = r.implied_value_usd; });
@@ -36,9 +41,10 @@ window.RadarChart = (function () {
       out.push('<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y + '" y2="' + y + '" class="grid"/>');
       out.push('<text x="' + (L - 8) + '" y="' + (Number(y) + 4) + '" class="axis" text-anchor="end">' + pair[1] + '</text>');
     });
-    [0, 375, 750, 1125, 1500].forEach(function (d) {
-      var anchor = d === 0 ? 'start' : d === 1500 ? 'end' : 'middle';
-      var x = d === 0 ? L : d === 1500 ? W - R : X(d);
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (f) {
+      var d = Math.round(xMax * f);
+      var anchor = f === 0 ? 'start' : f === 1 ? 'end' : 'middle';
+      var x = f === 0 ? L : f === 1 ? W - R : X(d);
       out.push('<text x="' + x + '" y="' + (H - 12) + '" class="axis" text-anchor="' + anchor + '">' + d + 'd</text>');
     });
 
@@ -80,5 +86,42 @@ window.RadarChart = (function () {
     });
   }
 
-  return { buildScatter: buildScatter, FAMILY_COLORS: FAMILY_COLORS, esc: esc };
+  // The family anchors as a small bar chart under the scatter: each
+  // family's learned mcap/TVL multiple on the same log band the anchors
+  // are clamped to, with the number of trading samples behind it. A
+  // family with no surviving sample borrows the global median and says so.
+  function buildAnchorBars(container, radar) {
+    var W = 880, rowH = 15, T = 16, B = 14, L = 66, R = 120;
+    var fams = Object.keys(FAMILY_COLORS);
+    var H = T + B + fams.length * rowH;
+    var iw = W - L - R;
+    var lo = Math.log10(0.02), hi = Math.log10(1.5);
+    function X(v) { return L + ((Math.log10(Math.max(v, 0.02)) - lo) / (hi - lo)) * iw; }
+    var out = ['<svg viewBox="0 0 ' + W + ' ' + H + '" class="anchors" role="img">'];
+    [0.05, 0.1, 0.25, 0.5, 1].forEach(function (v) {
+      var x = X(v).toFixed(1);
+      out.push('<line x1="' + x + '" x2="' + x + '" y1="' + (T - 4) + '" y2="' + (H - B) + '" class="grid"/>');
+      out.push('<text x="' + x + '" y="' + (H - 3) + '" class="axis" text-anchor="middle">' + v + '×</text>');
+    });
+    fams.forEach(function (fam, i) {
+      var f = radar.anchors.families[fam];
+      if (!f) return;
+      var y = T + i * rowH;
+      var w = Math.max(2, X(f.anchor) - L);
+      out.push('<text x="' + (L - 8) + '" y="' + (y + 10) + '" class="axis" text-anchor="end">' + fam + '</text>');
+      out.push('<rect x="' + L + '" y="' + (y + 2) + '" width="' + w.toFixed(1) + '" height="9" rx="2" fill="' +
+        FAMILY_COLORS[fam] + '" fill-opacity="0.85"/>');
+      out.push('<text x="' + (L + w + 6).toFixed(1) + '" y="' + (y + 10) + '" class="axis">' +
+        f.anchor.toFixed(3) + '× · n=' + f.n + (f.n === 0 ? ' (global median)' : '') + '</text>');
+    });
+    out.push('</svg>');
+    container.innerHTML = out.join('');
+  }
+
+  return {
+    buildScatter: buildScatter,
+    buildAnchorBars: buildAnchorBars,
+    FAMILY_COLORS: FAMILY_COLORS,
+    esc: esc
+  };
 })();

@@ -26,14 +26,16 @@
   $('kpi-rows').textContent = R.meta.board_count;
   $('kpi-watch').textContent = R.meta.watchlist_covered + '/' + R.meta.watchlist_count;
   $('kpi-early').textContent = R.meta.early_count;
-  $('kpi-verify').textContent = verdict.bad.length === 0
+  $('kpi-verify').textContent = verdict.bad.length === 0 && verdict.ordered
     ? '✓ recomputed ' + verdict.ok + '/' + verdict.total
-    : '✗ recompute mismatch on ' + verdict.bad.length;
+    : verdict.bad.length !== 0
+      ? '✗ recompute mismatch on ' + verdict.bad.length
+      : '✗ board order is not value-sorted';
 
   // ---- formula chips -------------------------------------------------------
   var CHIP_TEXT = {
     tvl: '<b>TVL</b> — the protocol\'s total value locked in the snapshot, in dollars. The size a launch would be valued against; it is the snapshot\'s own figure, not an estimate.',
-    anchor: '<b>anchor</b> — the mcap/TVL multiple of protocols whose token already trades, learned per category and shrunk in log space from category to family to global (K = 4) so a category with one sample borrows its family\'s strength. See <b>computeAnchors</b> in model.js.',
+    anchor: '<b>anchor</b> — the mcap/TVL multiple of protocols whose token already trades, learned per category and shrunk in log space from category to family to global (K = 4) so a category with one sample borrows its family\'s strength. Trading samples with a ratio outside [0.005, 5], or a TVL under $10M, are excluded outright — dropped, never clamped into the sample — and every excluded sample is listed, with its reason, in each row\'s detail. See <b>computeAnchors</b> in model.js.',
     momentum: '<b>momentum</b> — (1 + the 7-day TVL change, clamped to ±30%) raised to 1.5, itself clamped to [0.60, 1.50]. A protocol growing into its launch counts for more; an unreported change counts as exactly 1. See <b>momentumFactor</b>.',
     tokenless: '<b>tokenless</b> — 0.70 plus a log curve over the days the protocol has run with no token recorded, reaching 1.15 at three years. The longer the record without a token, the less of its use is mercenary. See <b>tokenlessFactor</b>.',
     share: '<b>airdrop share</b> — the slice of implied FDV a launch is assumed to hand to its users, set per family between 5% and 12%. A stated assumption of this board, in line with the range historical DeFi launches have used — a knob, not a measurement.'
@@ -49,8 +51,9 @@
     });
   });
 
-  // ---- scatter, top 10, legend --------------------------------------------
+  // ---- scatter, anchor bars, top 10, legend --------------------------------
   C.buildScatter($('chart'), R.rows, openDrawer);
+  C.buildAnchorBars($('anchor-bars'), R);
   $('top10').innerHTML = R.rows.slice(0, 10).map(function (r) {
     return '<li data-slug="' + esc(r.slug) + '"><span class="rk">' + r.rank + '</span>' +
       '<span><span class="nm">' + esc(r.name) + '</span><span class="ct">' +
@@ -67,25 +70,47 @@
       f + ' <b>' + famCount[f] + '</b></span>';
   }).join('') + '<span class="row"><span class="dot" style="background:none;border:2px solid #F5C451"></span>gold ring = watchlist</span>';
 
+  // ---- footer: the sample rule and the gas table, printed in full ---------
+  var sampleRule = R.params.anchor_sample;
+  var usedSamples = (R.anchors.samples || []).filter(function (s) { return s.used; }).length;
+  $('anchor-rule').textContent = 'Anchor samples: ' + usedSamples + ' trading protocols teach the anchors. ' +
+    R.anchors.dropped.total + ' candidate samples were excluded before any median was taken — ' +
+    R.anchors.dropped.ratio_outside + ' with a mcap/TVL ratio outside [' + sampleRule.ratio_min + ', ' +
+    sampleRule.ratio_max + '] (dropped outright, never clamped into the sample) and ' +
+    R.anchors.dropped.tvl_below_min + ' with a trading TVL under ' + fmtUsd(sampleRule.min_tvl_usd) +
+    '. Every excluded sample is listed, with its reason and the weight each used sample carries, ' +
+    'in the detail drawer of any row in its family.';
+  $('gas-table').textContent = 'Gas assumed per ordinary interaction: ' +
+    Object.keys(R.params.gas_usd).map(function (ch) {
+      return ch + ' ' + fmtCost(R.params.gas_usd[ch]);
+    }).join(' · ') +
+    ' · any other chain ' + fmtCost(R.params.gas_default_usd) +
+    ' — the default assumption, marked as such in every step that uses it.';
+
   // ---- board table ----------------------------------------------------------
+  // FDV and Pool are not columns any more: the drawer's waterfall carries
+  // the full build for every row, and the table keeps the columns a
+  // reader scans by — including EV/cost, the plan's own verdict.
   var COLS = [
-    { k: 'rank', label: '#', num: 1, get: function (r) { return r.rank; } },
-    { k: 'name', label: 'Protocol', get: function (r) { return r.name; } },
-    { k: 'family', label: 'Family', get: function (r) { return r.family; } },
-    { k: 'chain', label: 'Chain', get: function (r) { return r.chains[0] || ''; } },
-    { k: 'tvl', label: 'TVL', num: 1, get: function (r) { return r.tvl_usd; } },
-    { k: 'chg', label: '7d', num: 1, get: function (r) { return r.change_7d === null ? -Infinity : r.change_7d; } },
-    { k: 'age', label: 'Tokenless', num: 1, get: function (r) { return r.age_days; } },
-    { k: 'anchor', label: 'Anchor', num: 1, get: function (r) { return r.anchor; } },
-    { k: 'fdv', label: 'FDV', num: 1, get: function (r) { return r.fdv_usd; } },
-    { k: 'pool', label: 'Pool', num: 1, get: function (r) { return r.pool_usd; } },
-    { k: 'implied', label: 'Implied', num: 1, get: function (r) { return r.implied_value_usd; } },
-    { k: 'per1k', label: 'per $1k', num: 1, get: function (r) { return r.per_1k_usd; } }
+    { k: 'rank', label: '#', num: 1, w: 38, get: function (r) { return r.rank; } },
+    { k: 'name', label: 'Protocol', w: 248, get: function (r) { return r.name; } },
+    { k: 'family', label: 'Family', w: 94, get: function (r) { return r.family; } },
+    { k: 'chain', label: 'Chain', w: 112, get: function (r) { return r.chains[0] || ''; } },
+    { k: 'tvl', label: 'TVL', num: 1, w: 102, get: function (r) { return r.tvl_usd; } },
+    { k: 'chg', label: '7d', num: 1, w: 64, get: function (r) { return r.change_7d === null ? -Infinity : r.change_7d; } },
+    { k: 'age', label: 'Tokenless', num: 1, w: 84, get: function (r) { return r.age_days; } },
+    { k: 'anchor', label: 'Anchor', num: 1, w: 104, get: function (r) { return r.anchor; } },
+    { k: 'implied', label: 'Implied', num: 1, w: 114, get: function (r) { return r.implied_value_usd; } },
+    { k: 'per1k', label: 'per $1k', num: 1, w: 88, get: function (r) { return r.per_1k_usd; } },
+    { k: 'ev', label: 'EV/cost', num: 1, w: 82, get: function (r) { return r.ev_ratio; } }
   ];
   var state = { q: '', fams: {}, chain: '', tier: '', wl: false, dir: '', min: 0, sort: 'rank', sortDir: 1 };
   Object.keys(C.FAMILY_COLORS).forEach(function (f) { state.fams[f] = true; });
   var maxImplied = R.rows[0].implied_value_usd;
 
+  var colgroup = document.createElement('colgroup');
+  colgroup.innerHTML = COLS.map(function (c) { return '<col style="width:' + c.w + 'px">'; }).join('');
+  $('board').insertBefore(colgroup, $('board').firstChild);
   $('board-head').innerHTML = COLS.map(function (c) {
     return '<th data-k="' + c.k + '"' + (c.num ? ' class="num"' : '') + '>' + c.label + ' <span class="dir"></span></th>';
   }).join('');
@@ -142,10 +167,10 @@
         '<td class="num ' + chgCls + '">' + fmtPct(r.change_7d) + '</td>' +
         '<td class="num">' + r.age_days + 'd</td>' +
         '<td class="num">' + r.anchor.toFixed(3) + ' <span class="anchor-n">n=' + r.n_cat + '</span></td>' +
-        '<td class="num">' + fmtUsd(r.fdv_usd) + '</td>' +
-        '<td class="num">' + fmtUsd(r.pool_usd) + '</td>' +
         '<td class="num"><b>' + fmtUsd(r.implied_value_usd) + '</b></td>' +
-        '<td class="num">' + fmtUsd(r.per_1k_usd) + '</td></tr>';
+        '<td class="num">' + fmtUsd(r.per_1k_usd) + '</td>' +
+        '<td class="num ' + (r.ev_ratio < 1 ? 'ev-bad' : r.ev_ratio >= 3 ? 'ev-good' : '') + '">' +
+        r.ev_ratio.toFixed(1) + '×</td></tr>';
     }).join('');
     $('board-body').querySelectorAll('tr').forEach(function (tr) {
       tr.addEventListener('click', function () { openDrawer(tr.getAttribute('data-slug')); });
@@ -213,11 +238,27 @@
     if (!r) return;
     var afterAnchor = r.tvl_usd * r.anchor;
     var afterMom = afterAnchor * r.momentum;
-    var famTrading = R.trading.filter(function (t) { return t.family === r.family; })
-      .sort(function (a, b) { return b.ratio - a.ratio; }).slice(0, 5);
+    // The family's anchor samples, from the build's own sample list: the
+    // used ones with the weight each carries in its category anchor, and
+    // the excluded ones with the reason they carry none.
+    var famSamples = (R.anchors.samples || []).filter(function (s) { return s.family === r.family; });
+    var famUsed = famSamples.filter(function (s) { return s.used; })
+      .sort(function (a, b) { return b.ratio - a.ratio; });
+    var famDropped = famSamples.filter(function (s) { return !s.used; })
+      .sort(function (a, b) { return b.ratio - a.ratio; });
+    function sampleRow(s) {
+      if (s.used) {
+        return '<tr><td>' + esc(s.name) + '</td><td>' + esc(s.category || '—') + '</td><td>' +
+          s.ratio.toFixed(3) + '× <span class="wgt">weight ' + Math.round(s.weight_cat * 100) + '%</span></td></tr>';
+      }
+      var why = s.drop_reason === 'ratio-outside'
+        ? 'excluded — ratio outside [0.005, 5], dropped, not clamped'
+        : 'excluded — TVL under the $10M sample floor';
+      return '<tr class="dropped"><td>' + esc(s.name) + '</td><td>' + esc(s.category || '—') + '</td><td>' +
+        s.ratio.toFixed(3) + '×<span class="why">' + why + '</span></td></tr>';
+    }
     var re = M.impliedFor(R, anchors, r);
     var reOk = Math.abs(re.implied - r.implied_value_usd) <= 1;
-    var ratio = r.plan.total_cost_usd > 0 ? (r.plan.expected_usd / r.plan.total_cost_usd).toFixed(1) : '0.0';
     var notes = [];
     if (r.flags.g_missing) notes.push('Its 7-day change is unreported in the snapshot, so its momentum factor is exactly 1.');
     if (r.flags.age_missing) notes.push('The snapshot gives no listing date, so its tokenless age is taken as 180 days.');
@@ -238,24 +279,30 @@
       '<p class="prov">Anchor provenance: the ' + esc(r.category || 'uncategorised') + ' category contributes ' + r.n_cat +
       ' trading samples, its ' + r.family + ' family ' + r.n_fam + '; shrinkage weight n/(n+K) = ' +
       (r.n_cat / (r.n_cat + 4)).toFixed(2) + ' on its own evidence, the rest borrowed from the family and the global median. ' +
+      (famDropped.length
+        ? famDropped.length + ' trading sample' + (famDropped.length === 1 ? '' : 's') +
+          ' in this family were excluded by the sample rule before any median was taken; they carry no weight and are listed below with their reasons. '
+        : '') +
       notes.join(' ') + '</p>' +
       '<h3>Trading multiples in its family</h3>' +
-      (famTrading.length
-        ? '<table class="mult">' + famTrading.map(function (t) {
-            return '<tr><td>' + esc(t.name) + '</td><td>' + esc(t.category || '—') + '</td><td>' + t.ratio.toFixed(3) + '×</td></tr>';
-          }).join('') + '</table>'
+      (famSamples.length
+        ? '<table class="mult">' + famUsed.slice(0, 6).map(sampleRow).join('') + famDropped.map(sampleRow).join('') + '</table>' +
+          (famUsed.length > 6 ? '<p class="prov">+ ' + (famUsed.length - 6) + ' more used samples in this family, each weighted the same way.</p>' : '')
         : '<p class="prov">No protocol in this family has a trading token in the snapshot; the anchor falls back to the global median.</p>') +
       '<h3>Farm plan — ' + r.plan.steps.length + ' steps</h3>' +
       r.plan.steps.map(function (s) {
         return '<div class="plan-step"><div class="act"><b>Step ' + s.n + '.</b> ' + esc(s.action) + '</div>' +
-          '<div class="tags"><span class="tag">cost ' + fmtCost(s.cost_usd) + '</span>' +
+          '<div class="tags"><span class="tag">cost ' + fmtCost(s.cost_usd) +
+          (s.gas_default ? ' (default assumption)' : '') + '</span>' +
           (s.capital_usd > 0 ? '<span class="tag">capital ' + fmtUsd(s.capital_usd) + '</span>' : '') +
           '<span class="tag">' + esc(s.time) + '</span>' +
           '<span class="tag risk">' + esc(s.risk) + '</span></div></div>';
       }).join('') +
       '<p class="totals">Payback: put <b>' + fmtUsd(r.plan.capital_usd) + '</b> in for <b>' + r.plan.hold_days +
       ' days</b> — all-in cost ≈ <b>' + fmtUsd(r.plan.total_cost_usd) + '</b> (gas and fees plus a 5%/yr opportunity cost), ' +
-      'model expectation <b>' + fmtUsd(r.plan.expected_usd) + '</b>, a ratio of <b>' + ratio + '×</b>.</p>' +
+      'model expectation <b>' + fmtUsd(r.plan.expected_usd) + '</b>, an EV/cost of <b>' + r.ev_ratio.toFixed(1) + '×</b>' +
+      (r.plan.priority ? ' — flagged <b>priority</b> on this board' : '') +
+      (r.ev_ratio < 1 ? ' — under 1, so this plan runs at the minimum size and its last step says why' : '') + '.</p>' +
       '<p class="verify-line">' + (reOk
         ? '✓ recomputed on this page: ' + fmtUsd(re.implied) + ' — matches the board'
         : '✗ recomputed on this page: ' + fmtUsd(re.implied) + ' — differs from the board\'s ' + fmtUsd(r.implied_value_usd)) + '</p>';

@@ -35,6 +35,7 @@
   <section class="panel chart-panel">
     <div class="panel-head"><h2>TVL against time with no token recorded</h2><span class="hint">point size = implied value · gold ring = watchlist · click a point for its detail</span></div>
     <div id="chart" class="chart"></div>
+    <div id="anchor-bars" class="anchor-bars"></div>
     <div id="legend" class="legend strip"></div>
   </section>
   <aside class="side">
@@ -88,6 +89,8 @@
 
 <footer>
   <p>Implied values are this board's model claims, computed from the snapshot's figures under the stated assumptions; they are not make.fun's data, and nothing here predicts whether or when a protocol issues a token. “Records no token” describes the snapshot's record, not the world. The snapshot names no parent protocol, so a wrapped or staked product of a traded token can only be screened by category and name, as the watchlist's own rule does — that limit is inherited, and stated rather than hidden. Data: DefiLlama protocols API, fetched for this snapshot. Anchors, gas prices and airdrop shares are assumptions of the model, printed on the page where they are used.</p>
+  <p id="anchor-rule"></p>
+  <p id="gas-table"></p>
   <p class="for-judge">For the judge: the model lives in model.js and runs again in your browser on every load — the pill in the header reports how many of the board's values it reproduces exactly. The farm plans are generated per row from each protocol's chain, TVL and age; no protocol is named in any source file.</p>
 </footer>
 

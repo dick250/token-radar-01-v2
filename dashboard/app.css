@@ -20,7 +20,7 @@ body {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.45;
-  padding: 10px 24px 28px;
+  padding: 10px 16px 28px;
 }
 .num, td.num, .pill b, .kpi-num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 h1 { font-size: 20px; margin: 0; letter-spacing: .2px; }
@@ -72,6 +72,8 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
   background-size: 22px 22px;
 }
 svg.scatter { width: 100%; height: auto; display: block; }
+.anchor-bars { margin-top: 2px; border-top: 1px solid #22231E; padding-top: 4px; }
+svg.anchors { width: 100%; height: auto; display: block; }
 svg .grid { stroke: var(--line); stroke-width: 1; }
 svg .axis { fill: var(--muted); font-size: 11px; font-family: var(--mono); }
 svg .pt { cursor: pointer; }
@@ -135,17 +137,20 @@ svg .pt.wl { stroke: var(--gold); stroke-width: 1.6; }
 .f-count { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
 
 /* table */
-table.board { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
-.board th, .board td { padding: 0 10px; height: 40px; border-bottom: 1px solid #22231E; text-align: left; white-space: nowrap; }
-.board th { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; cursor: pointer; user-select: none; }
+table.board { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); table-layout: fixed; }
+.board th, .board td { padding: 0 7px; height: 40px; border-bottom: 1px solid #22231E; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.board th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; cursor: pointer; user-select: none; }
 .board th:hover { color: var(--text); }
 .board th .dir { color: var(--signal); }
-.board td { font-size: 13px; }
+.board td { font-size: 12.5px; }
 .board td.num, .board th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .board tbody tr { cursor: pointer; }
 .board tbody tr:hover { background: var(--panel-hover); }
 .pname { font-weight: 600; }
-.slug { color: var(--muted); font-size: 11.5px; font-family: var(--mono); margin-left: 6px; }
+.slug { color: var(--muted); font-size: 11px; font-family: var(--mono); margin-left: 6px; }
+td .slug { display: block; margin-left: 0; line-height: 1.2; }
+.ev-bad { color: var(--warn); }
+.ev-good { color: var(--signal); }
 .badge {
   display: inline-block; font-size: 10px; letter-spacing: .6px; padding: 2px 6px;
   border-radius: 4px; margin-left: 6px; vertical-align: 2px; font-weight: 700;
@@ -178,6 +183,9 @@ table.board { width: 100%; border-collapse: collapse; background: var(--panel); 
 .mult { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .mult td { padding: 4px 6px; border-bottom: 1px solid #22231E; }
 .mult td:last-child { text-align: right; font-family: var(--mono); }
+.mult tr.dropped td { color: var(--muted); }
+.mult .why { display: block; font-size: 11px; color: var(--warn); font-family: var(--mono); }
+.mult .wgt { color: var(--muted); font-size: 11px; }
 .plan-step { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; background: var(--panel); }
 .plan-step .act { font-size: 13px; }
 .plan-step .tags { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; }
