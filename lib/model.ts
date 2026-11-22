@@ -104,6 +104,40 @@ export const AIRDROP_SHARE: Readonly<Record<string, number>> = {
 // own evidence and half on its family's.
 export const SHRINK_K = 4;
 
+// Anchor-sample hygiene. A trading protocol only teaches the anchors when
+// its multiple is plausible for a launch valuation and its TVL is large
+// enough for the multiple to mean anything:
+//   - a mcap/TVL ratio outside [RATIO_MIN, RATIO_MAX] is an outlier — a
+//     wrapped, mispriced or near-dead token — and is dropped outright,
+//     never clamped into the sample (clamping a 400x multiple to 5x still
+//     lets it shout);
+//   - a trading TVL below ANCHOR_MIN_TVL makes the ratio mostly noise.
+// Dropped samples are not hidden: computeAnchors returns them, with the
+// reason, and the dashboard prints the count and the rule.
+export const RATIO_MIN = 0.005;
+export const RATIO_MAX = 5;
+export const ANCHOR_MIN_TVL = 10_000_000;
+
+export type AnchorDropReason = 'ratio-outside' | 'tvl-below-min';
+
+export interface AnchorSample {
+  slug: string;
+  name: string;
+  category: string | null;
+  family: string;
+  tvl_usd: number;
+  mcap_usd: number;
+  ratio: number;
+  used: boolean;
+  dropReason: AnchorDropReason | null;
+  // Share of the sample's category anchor carried by this one sample: the
+  // category's own evidence weighs n/(n+K) of its anchor, split evenly
+  // across its n samples, so each carries 1/(n+K). Zero when dropped.
+  weightCat: number;
+  // The same share one level up, in the family anchor: 1/(n_fam+K).
+  weightFam: number;
+}
+
 export function familyOf(category: string | null): string {
   if (category === null) return 'other';
   return FAMILY_OF_CATEGORY[category] ?? 'other';
@@ -147,19 +181,43 @@ export interface Anchors {
   globalN: number;
   families: Map<string, FamilyAnchor>;
   categories: Map<string, CategoryAnchor>;
+  samples: AnchorSample[];
+  droppedCount: number;
 }
 
 // Build the two-level log-space shrinkage anchors from the trading sample:
-// protocols whose token trades and whose category is not an excluded one.
-// Each sample contributes ln(clamp(mcap / TVL, 0.005, 5)).
+// protocols whose token trades and whose category is not an excluded one,
+// minus the outliers and the too-small (see the hygiene rule above). Each
+// surviving sample contributes ln(mcap / TVL) — unclamped, because anything
+// outside the plausible band is already gone.
 export function computeAnchors(protocols: Protocol[]): Anchors {
   const catLogs = new Map<string, number[]>();
   const famLogs = new Map<string, number[]>();
   const allLogs: number[] = [];
+  const rawSamples: AnchorSample[] = [];
   for (const p of protocols) {
     if (tokenStatus(p) !== 'trading') continue;
     if (p.category !== null && EXCLUDED_CATEGORIES.has(p.category)) continue;
-    const log = Math.log(clamp(p.mcap_usd! / p.tvl_usd, 0.005, 5));
+    const ratio = p.mcap_usd! / p.tvl_usd;
+    let dropReason: AnchorDropReason | null = null;
+    if (ratio < RATIO_MIN || ratio > RATIO_MAX) dropReason = 'ratio-outside';
+    else if (p.tvl_usd < ANCHOR_MIN_TVL) dropReason = 'tvl-below-min';
+    const sample: AnchorSample = {
+      slug: p.slug,
+      name: p.name,
+      category: p.category,
+      family: familyOf(p.category),
+      tvl_usd: p.tvl_usd,
+      mcap_usd: p.mcap_usd!,
+      ratio,
+      used: dropReason === null,
+      dropReason,
+      weightCat: 0,
+      weightFam: 0,
+    };
+    rawSamples.push(sample);
+    if (dropReason !== null) continue;
+    const log = Math.log(ratio);
     const catKey = p.category ?? '(none)';
     if (!catLogs.has(catKey)) catLogs.set(catKey, []);
     catLogs.get(catKey)!.push(log);
@@ -205,7 +263,29 @@ export function computeAnchors(protocols: Protocol[]): Anchors {
       });
     }
   }
-  return { globalLog, globalN: allLogs.length, families, categories };
+  // Per-sample evidence weights, now that every level's n is known, and a
+  // deterministic order for the sample list the dashboard prints.
+  for (const s of rawSamples) {
+    if (!s.used) continue;
+    const nCat = (catLogs.get(s.category ?? '(none)') ?? []).length;
+    const nFam = (famLogs.get(s.family) ?? []).length;
+    s.weightCat = 1 / (nCat + SHRINK_K);
+    s.weightFam = 1 / (nFam + SHRINK_K);
+  }
+  rawSamples.sort((a, b) => {
+    if (a.family !== b.family) return a.family < b.family ? -1 : 1;
+    const ca = a.category ?? '', cb = b.category ?? '';
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
+  });
+  return {
+    globalLog,
+    globalN: allLogs.length,
+    families,
+    categories,
+    samples: rawSamples,
+    droppedCount: rawSamples.filter((s) => !s.used).length,
+  };
 }
 
 // Whole days between two UTC calendar dates given as YYYY-MM-DD.

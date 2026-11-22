@@ -14,6 +14,10 @@ export interface PlanStep {
   capital_usd: number;
   time: string;
   risk: string;
+  // True when this step's gas comes from a chain the gas table does not
+  // name, so the figure is the board's default assumption, not a per-chain
+  // estimate. The board's step text says so where it applies.
+  gas_default?: boolean;
 }
 
 export interface Plan {
@@ -21,7 +25,11 @@ export interface Plan {
   capital_usd: number;   // headline suggested position
   hold_days: number;
   total_cost_usd: number; // gas and fees plus a 5%/yr opportunity cost
+  total_gas_usd: number;  // the gas part of the total cost alone
+  active_minutes: number; // hands-on time across the steps, roughly
   expected_usd: number;   // capital/1000 x per_1k, under the board's model
+  ev_ratio: number;       // expected / total cost, under the board's model
+  priority: boolean;      // ev_ratio >= 3: the board flags the row
 }
 
 // One ordinary interaction's gas, in dollars, by chain. A stated assumption
@@ -53,6 +61,11 @@ export const GAS_DEFAULT = 0.20;
 
 export function gasFor(chain: string): number {
   return GAS_USD[chain] ?? GAS_DEFAULT;
+}
+
+// True when the chain is not in the table and its gas is the default.
+export function gasIsDefault(chain: string): boolean {
+  return !(chain in GAS_USD);
 }
 
 const NICE_TIERS = [200, 500, 1000, 2000, 5000, 10000];
@@ -115,12 +128,20 @@ function secondChainStep(c: Ctx): PlanStep {
     c.gas2, Math.round(c.capital / 4), '15 min', 'Small size only; the main position stays on the main chain.');
 }
 
-// Step 6: the hold, with the row's own warnings folded in.
+// Step 6: the hold. Its wording follows the row: the check-in cadence
+// follows the position size, and the 7-day move — up, drifting or falling
+// hard — each earns its own sentence rather than one shared paragraph.
 function holdStep(c: Ctx): PlanStep {
-  let action = `Hold the position for ${c.hold} days, checking in once a week and claiming any points or rewards the protocol shows as they appear.`;
+  const cadence = c.capital >= 5000 ? 'twice a week' : 'once a week';
+  let action = `Hold the position for ${c.hold} days, checking in ${cadence} and claiming any points or rewards the protocol shows as they appear.`;
   let risk = 'Smart-contract risk for the whole hold; never add funds you cannot leave locked for the full period.';
   if (c.age < 180) {
     action += ` ${c.name} has only run ${c.age} days in the snapshot, so re-read its points or rewards rules at every weekly check; young protocols change them often.`;
+  }
+  if (c.change7d !== null && c.change7d > 10) {
+    action += ` Its TVL grew ${c.change7d.toFixed(1)}% in the last 7 days, so expect more farmers competing for the same rewards; that is a reason to be in at this size now, not to arrive larger later.`;
+  } else if (c.change7d !== null && c.change7d < 0 && c.change7d >= -10) {
+    action += ` Its TVL slipped ${Math.abs(c.change7d).toFixed(1)}% this week, which is noise at this size rather than a signal; the plan changes only if the exit rule triggers.`;
   }
   if (c.change7d !== null && c.change7d < -10) {
     risk = `Its TVL fell ${Math.abs(c.change7d).toFixed(1)}% in the last 7 days: start at half size and only top up once the outflow stops. ` + risk;
@@ -128,12 +149,64 @@ function holdStep(c: Ctx): PlanStep {
   return step(6, action, 0, 0, `${c.hold} days`, risk);
 }
 
-// Step 7: the record and the exit rule, with the model expectation stated.
-function exitStep(c: Ctx, plan: { totalCost: number; expected: number }): PlanStep {
-  const ratio = plan.totalCost > 0 ? (plan.expected / plan.totalCost).toFixed(1) : '0.0';
-  return step(7,
-    `Log the wallet address and every transaction hash in a sheet from day one. Exit rule: unwind after ${c.hold} days, or at once if the team announces a snapshot or the position's terms change. Under this board's model the expected value is ${fmtUsd(plan.expected)} on ${fmtUsd(c.capital)} deployed, against about ${fmtUsd(plan.totalCost)} of total cost, a ratio of ${ratio}x.`,
-    c.gas, 0, '15 min', 'Expectation is this board\'s model claim, not a promise; the exit rule matters more than the number.');
+// Step 7: the record and the exit rule. How the unwind is done follows the
+// position size, and a still-falling TVL at the end closes the door on
+// waiting for a recovery.
+function exitStep(c: Ctx): PlanStep {
+  let action = `Log the wallet address and every transaction hash in a sheet from day one. Exit rule: unwind after ${c.hold} days, or at once if the team announces a snapshot or the position's terms change.`;
+  if (c.capital >= 5000) {
+    action += ' At this size, unwind in two tranches on separate days rather than in a single transaction.';
+  } else if (c.capital <= 500) {
+    action += ' At this size, unwind in a single transaction; speed beats squeezing the price.';
+  }
+  if (c.change7d !== null && c.change7d < -10) {
+    action += ' If TVL is still falling when the hold ends, leave on schedule — do not wait for a recovery the exit rule never promised.';
+  }
+  return step(7, action, c.gas, 0, '15 min',
+    'The exit rule matters more than any single number in this plan; a position held past its rule is a new, unplanned position.');
+}
+
+// Step 8: the plan's own arithmetic, and its verdict. Every plan closes
+// with its totals — capital, gas, hands-on time, hold — and what the
+// board's model says they buy. A row whose expectation does not cover its
+// cost is told so here, in its last step, and its size has already been
+// cut to the minimum tier by buildPlan.
+function summaryStep(
+  c: Ctx,
+  t: { gasTotal: number; totalCost: number; expected: number; ratio: number; active: number; stepCount: number },
+): PlanStep {
+  // Small amounts keep their cents: on a two-cent-gas chain a whole plan's
+  // gas rounds to $0 in whole dollars, which would read as free.
+  const amt = (x: number) => (x < 10 ? '$' + x.toFixed(2) : fmtUsd(x));
+  const expected = t.expected < 1 ? 'under $1' : amt(t.expected);
+  const ratio = t.ratio < 0.1 ? t.ratio.toFixed(2) : t.ratio.toFixed(1);
+  let verdict: string;
+  if (t.ratio < 1) {
+    verdict = `On this board's own model that does not pay: run only steps 1–3 at this minimum size, as a cheap option on the model being wrong, or keep ${c.name} on a watchlist and farm a better-paying row instead.`;
+  } else if (t.ratio >= 3) {
+    verdict = 'That makes this a priority row on this board: if you farm one new position this week, this is the one to start with.';
+  } else {
+    verdict = 'Positive on the model\'s own terms; the size is set by the protocol\'s TVL, not by enthusiasm.';
+  }
+  return step(8,
+    `Plan totals for ${c.name}: ${fmtUsd(c.capital)} of capital, ${amt(t.gasTotal)} of gas across ${t.stepCount} steps, roughly ${t.active} minutes of hands-on time over a ${c.hold}-day hold. All-in cost ${amt(t.totalCost)} against a model expectation of ${expected}, an EV/cost of ${ratio}x. ${verdict}`,
+    0, 0, `${c.hold} days`, 'The expectation is this board\'s model claim, not a promise; the totals are the plan\'s own arithmetic.');
+}
+
+// Rough hands-on minutes across a plan's steps: the stated minutes, with
+// weekly chores counted four times over a hold, and a two-week spread of
+// small interactions counted once. Hold durations are not hands-on time.
+export function activeMinutesOf(steps: PlanStep[]): number {
+  let total = 0;
+  for (const s of steps) {
+    const m = /^(\d+)\s*min/.exec(s.time);
+    if (m) {
+      total += Number(m[1]) * (s.time.includes('weekly') ? 4 : 1);
+    } else if (s.time === '2 weeks') {
+      total += 20;
+    }
+  }
+  return total;
 }
 
 type CoreBuilder = (c: Ctx) => PlanStep[];
@@ -205,29 +278,57 @@ const CORE: Record<string, CoreBuilder> = {
   ],
 };
 
-// Step 5 when there is no second chain worth showing: deepen the first one.
+// Step 5 when there is no second chain worth showing: deepen the first
+// one. Each family gets a real second action of its own — a second vault,
+// pair, market or product — with the risk that action actually carries,
+// never a filler step.
 function deepenStep(c: Ctx): PlanStep {
-  const byFamily: Record<string, string> = {
-    capital: `Move ${fmtUsd(Math.round(c.capital / 4))} into a second vault of ${c.name} with a different curator or strategy, so one curator's bad week cannot take the whole position.`,
-    dex: `Add a second, smaller range on the next-busiest pair with ${fmtUsd(Math.round(c.capital / 4))}, so the record covers more than one market.`,
-    derivs: `Repeat the weekly trade on a second market ${c.name} lists, at the same small size, so the volume record is not one pair deep.`,
-    credit: `Set a liquidation-price alert at 60% of your collateral's current value and test that it fires; an alert you have not tested is a hope, not a plan.`,
-    rwa: `If a second product from the same issuer is open, split ${fmtUsd(Math.round(c.capital / 4))} into it; if none is, diarise the next subscription window instead.`,
-    btc: `Claim any points or receipts the pool issues and restake them into the same position, so the record compounds instead of idling.`,
-    infra: `Return once a week for four weeks with one fresh interaction each time; steady use over a month outweighs any single busy day.`,
-    other: `Try one advanced feature of ${c.name} beyond its core action — a setting, a second mode, a governance page — so the record shows exploration, not repetition.`,
+  const byFamily: Record<string, { action: string; risk: string }> = {
+    capital: {
+      action: `Move ${fmtUsd(Math.round(c.capital / 4))} into a second vault of ${c.name} with a different curator or strategy, so one curator's bad week cannot take the whole position.`,
+      risk: 'A second curator diversifies strategy, not safety; read its lending choices before funding it.',
+    },
+    dex: {
+      action: `Add a second, smaller range on the next-busiest pair with ${fmtUsd(Math.round(c.capital / 4))}, so the record covers more than one market.`,
+      risk: 'Two ranges drift out of bounds independently; the weekly rebalance now covers both.',
+    },
+    derivs: {
+      action: `Repeat the weekly trade on a second market ${c.name} lists, at the same small size, so the volume record is not one pair deep.`,
+      risk: 'Two markets can gap together in a stress move; the same stop rule applies to each.',
+    },
+    credit: {
+      action: `Set a liquidation-price alert at 60% of your collateral's current value and test that it fires; an alert you have not tested is a hope, not a plan.`,
+      risk: 'The untested alert is the risk here; if it does not fire, fix it before adding any size.',
+    },
+    rwa: {
+      action: `If a second product from the same issuer is open, split ${fmtUsd(Math.round(c.capital / 4))} into it; if none is, diarise the next subscription window instead.`,
+      risk: 'A second product from one issuer concentrates issuer risk rather than spreading it.',
+    },
+    btc: {
+      action: `Claim any points or receipts the pool issues and restake them into the same position, so the record compounds instead of idling.`,
+      risk: 'Restaked receipts inherit both layers\' risks; a pause in either layer stops the compounding.',
+    },
+    infra: {
+      action: `Return once a week for four weeks with one fresh interaction each time; steady use over a month outweighs any single busy day.`,
+      risk: 'The activity must stay genuine use; empty transactions read as farming and can be filtered out.',
+    },
+    other: {
+      action: `Try one advanced feature of ${c.name} beyond its core action — a setting, a second mode, a governance page — so the record shows exploration, not repetition.`,
+      risk: 'Advanced features are the least documented part of most products; use the smallest size that works.',
+    },
   };
-  return step(5, byFamily[c.family] ?? byFamily['other']!, c.gas, Math.round(c.capital / 4), '15 min',
-    'Optional depth; skip it if the core position is not yet in place.');
+  const entry = byFamily[c.family] ?? byFamily['other']!;
+  return step(5, entry.action, c.gas, Math.round(c.capital / 4), '15 min', entry.risk);
 }
 
 export function buildPlan(row: BoardRowCore): Plan {
   const p = row.protocol;
   const chain = p.chains[0] ?? 'Ethereum';
   const chain2 = p.chains.length >= 2 ? p.chains[1]! : null;
-  const capital = capitalFor(p.tvl_usd);
   const hold = holdDaysFor(row.ageDays);
-  const c: Ctx = {
+  const multiChain = p.chains.length >= 3 && chain2 !== null;
+
+  const makeCtx = (capital: number): Ctx => ({
     name: p.name,
     family: row.family,
     chain,
@@ -240,25 +341,75 @@ export function buildPlan(row: BoardRowCore): Plan {
     hold,
     change7d: p.change_7d,
     nChains: p.chains.length,
+  });
+
+  // Steps 1–6 for a given position size: wallet, the family's three core
+  // actions, a second chain or a deeper second action, and the hold.
+  const assemble = (c: Ctx): PlanStep[] => {
+    const core = (CORE[row.family] ?? CORE['other']!)(c);
+    if (p.tvl_usd < 20_000_000 && core[0]) {
+      core[0] = { ...core[0], risk: core[0].risk + ' Small protocol: keep this position under 2% of your total farming budget.' };
+    }
+    const step5 = multiChain ? secondChainStep(c) : deepenStep(c);
+    return [walletStep(c), ...core, step5, holdStep(c)];
   };
-  const core = (CORE[row.family] ?? CORE['other']!)(c);
-  if (p.tvl_usd < 20_000_000 && core[0]) {
-    core[0] = { ...core[0], risk: core[0].risk + ' Small protocol: keep this position under 2% of your total farming budget.' };
+
+  const totalsFor = (c: Ctx, steps: PlanStep[]) => {
+    const gasTotal = Math.round((steps.reduce((s, x) => s + x.cost_usd, 0) + c.gas) * 100) / 100; // + exit gas
+    const opportunity = c.capital * 0.05 * (hold / 365);
+    const totalCost = Math.round((gasTotal + opportunity) * 100) / 100;
+    const expected = Math.round((c.capital / 1000) * row.per1k);
+    return { gasTotal, totalCost, expected, ratio: totalCost > 0 ? expected / totalCost : 0 };
+  };
+
+  // First pass at the TVL-scaled size. If the model's expectation does not
+  // cover the plan's cost, the plan is rebuilt once at the minimum size:
+  // the board does not advise a full-size farm its own model calls a loss,
+  // and the summary step of such a plan says exactly that.
+  let capital = capitalFor(p.tvl_usd);
+  let c = makeCtx(capital);
+  let steps = assemble(c);
+  let t = totalsFor(c, steps);
+  if (t.ratio < 1 && capital > NICE_TIERS[0]!) {
+    capital = NICE_TIERS[0]!;
+    c = makeCtx(capital);
+    steps = assemble(c);
+    t = totalsFor(c, steps);
   }
-  const step5 = p.chains.length >= 3 && chain2 ? secondChainStep(c) : deepenStep(c);
-  const steps: PlanStep[] = [walletStep(c), ...core, step5, holdStep(c)];
-  const gasTotal = steps.reduce((s, x) => s + x.cost_usd, 0) + gasFor(chain); // exit gas
-  const opportunity = capital * 0.05 * (hold / 365);
-  const totalCost = Math.round((gasTotal + opportunity) * 100) / 100;
-  const expected = Math.round((capital / 1000) * row.per1k);
-  steps.push(exitStep(c, { totalCost, expected }));
-  return { steps, capital_usd: capital, hold_days: hold, total_cost_usd: totalCost, expected_usd: expected };
+
+  steps.push(exitStep(c));
+
+  // Mark the steps whose gas is the board's default assumption (their
+  // chain is not in the gas table), so the step text can say so.
+  const isGasMultiple = (cost: number, g: number) =>
+    cost > 0 && g > 0 && Math.abs(cost / g - Math.round(cost / g)) < 0.02;
+  steps.forEach((s, i) => {
+    if (i === 4 && multiChain) {
+      if (gasIsDefault(chain2!) && isGasMultiple(s.cost_usd, c.gas2)) s.gas_default = true;
+    } else if (gasIsDefault(chain) && isGasMultiple(s.cost_usd, c.gas)) {
+      s.gas_default = true;
+    }
+  });
+
+  const active = activeMinutesOf(steps);
+  steps.push(summaryStep(c, { ...t, active, stepCount: steps.length + 1 }));
+  return {
+    steps,
+    capital_usd: capital,
+    hold_days: hold,
+    total_cost_usd: t.totalCost,
+    total_gas_usd: t.gasTotal,
+    active_minutes: active,
+    expected_usd: t.expected,
+    ev_ratio: t.ratio,
+    priority: t.ratio >= 3,
+  };
 }
 
 // Render one structured step as the board's farm_steps sentence, in the
 // shape: "Step 2 — <action>. Gas ≈ $0.05; capital $2,000; 15 min; risk: … ."
 export function stepText(s: PlanStep): string {
-  const tail = [`Gas ≈ ${fmtGas(s.cost_usd)}`];
+  const tail = [`Gas ≈ ${fmtGas(s.cost_usd)}${s.gas_default ? ' (default assumption)' : ''}`];
   if (s.capital_usd > 0) tail.push(`capital ${fmtUsd(s.capital_usd)}`);
   tail.push(s.time);
   tail.push(`risk: ${s.risk.replace(/\.$/, '')}`);
