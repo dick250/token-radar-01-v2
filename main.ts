@@ -12,7 +12,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFi
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  AIRDROP_SHARE, FAMILY_OF_CATEGORY, computeAnchors, computeRow, admittedToBoard,
+  AIRDROP_SHARE, ANCHOR_MIN_TVL, FAMILY_OF_CATEGORY, RATIO_MAX, RATIO_MIN,
+  computeAnchors, computeRow, admittedToBoard,
   familyOf, rankRows, roundTo, tokenStatus, type Protocol, type Snapshot,
 } from './lib/model.ts';
 import { GAS_DEFAULT, GAS_USD, buildPlan, stepText } from './lib/plans.ts';
@@ -110,11 +111,16 @@ function main(): void {
       airdrop_share: core.share,
       pool_usd: Math.round(core.pool),
       per_1k_usd: roundTo(core.per1k, 2),
+      ev_ratio: roundTo(plan.ev_ratio, 2),
       plan: {
         capital_usd: plan.capital_usd,
         hold_days: plan.hold_days,
         total_cost_usd: plan.total_cost_usd,
+        total_gas_usd: plan.total_gas_usd,
+        active_minutes: plan.active_minutes,
         expected_usd: plan.expected_usd,
+        ev_ratio: roundTo(plan.ev_ratio, 2),
+        priority: plan.priority,
         steps: plan.steps,
       },
       farm_steps: farmSteps,
@@ -171,6 +177,27 @@ function main(): void {
       median_log: c.medianLog === null ? null : roundTo(c.medianLog, 6),
       anchor: roundTo(c.anchor, 4),
     }])),
+    // Every candidate sample, used or dropped, so the page can show its
+    // working: which trading multiples taught the anchors, which were
+    // excluded as outliers or too small, and what each one weighs.
+    samples: anchors.samples.map((s) => ({
+      slug: s.slug,
+      name: s.name,
+      category: s.category,
+      family: s.family,
+      tvl_usd: s.tvl_usd,
+      mcap_usd: s.mcap_usd,
+      ratio: roundTo(s.ratio, 4),
+      used: s.used,
+      drop_reason: s.dropReason,
+      weight_cat: roundTo(s.weightCat, 4),
+      weight_fam: roundTo(s.weightFam, 4),
+    })),
+    dropped: {
+      total: anchors.droppedCount,
+      ratio_outside: anchors.samples.filter((s) => s.dropReason === 'ratio-outside').length,
+      tvl_below_min: anchors.samples.filter((s) => s.dropReason === 'tvl-below-min').length,
+    },
   };
 
   const radar = {
@@ -187,7 +214,7 @@ function main(): void {
     },
     params: {
       shrink_k: 4,
-      ratio_clamp: [0.005, 5],
+      anchor_sample: { ratio_min: RATIO_MIN, ratio_max: RATIO_MAX, min_tvl_usd: ANCHOR_MIN_TVL },
       anchor_clamp: [0.02, 1.5],
       gas_usd: GAS_USD,
       gas_default_usd: GAS_DEFAULT,
