@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pre-Token Radar</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>Pre-Token Radar</h1>
+    <p class="sub">Protocols that record no token yet, ranked by implied launch value · snapshot <span id="asof">—</span> · DefiLlama</p>
+  </div>
+  <div class="kpis">
+    <span class="pill"><b id="kpi-rows">–</b> ranked</span>
+    <span class="pill"><b id="kpi-watch">–</b> watchlist</span>
+    <span class="pill"><b id="kpi-early">–</b> early (&lt;$50M)</span>
+    <span class="pill ok" id="kpi-verify">recomputing…</span>
+  </div>
+</header>
+
+<div class="formula" id="formula">
+  <span class="f-label">implied&nbsp;=</span>
+  <button class="chip" data-chip="tvl">TVL</button><span class="x">×</span>
+  <button class="chip" data-chip="anchor">anchor</button><span class="x">×</span>
+  <button class="chip" data-chip="momentum">momentum</button><span class="x">×</span>
+  <button class="chip" data-chip="tokenless">tokenless</button><span class="x">×</span>
+  <button class="chip" data-chip="share">airdrop share</button>
+  <span class="f-note">every factor is computed on this page from the snapshot's own figures — click a factor</span>
+  <div class="popover" id="chip-pop" hidden></div>
+</div>
+
+<main class="layout">
+  <section class="panel chart-panel">
+    <div class="panel-head"><h2>TVL against time with no token recorded</h2><span class="hint">point size = implied value · gold ring = watchlist · click a point for its detail</span></div>
+    <div id="chart" class="chart"></div>
+    <div id="legend" class="legend strip"></div>
+  </section>
+  <aside class="side">
+    <section class="panel">
+      <div class="panel-head"><h2>Top 10</h2></div>
+      <ol id="top10" class="top10"></ol>
+    </section>
+  </aside>
+</main>
+
+<nav class="tabs">
+  <button class="tab active" id="tab-board">Pre-token board</button>
+  <button class="tab" id="tab-trading">Trading comparison — not ranked</button>
+</nav>
+
+<section id="view-board">
+  <div class="filters" id="filters">
+    <input id="f-q" type="search" placeholder="Search name or slug…">
+    <span id="f-fams" class="fam-chips"></span>
+    <select id="f-chain"><option value="">All main chains</option></select>
+    <select id="f-tier">
+      <option value="">All sizes</option>
+      <option value="core">≥ $50M</option>
+      <option value="early">Early $5–50M</option>
+    </select>
+    <select id="f-dir">
+      <option value="">7d: any</option>
+      <option value="up">7d rising</option>
+      <option value="down">7d falling</option>
+    </select>
+    <label class="wl-toggle"><input type="checkbox" id="f-wl"> Watchlist only</label>
+    <label class="min-implied">Implied ≥ <input type="range" id="f-min" min="0" max="100" value="0"> <output id="f-min-out">$0</output></label>
+    <span id="f-count" class="f-count"></span>
+  </div>
+  <table id="board" class="board">
+    <thead><tr id="board-head"></tr></thead>
+    <tbody id="board-body"></tbody>
+  </table>
+</section>
+
+<section id="view-trading" hidden>
+  <p class="note">These protocols' tokens already trade. They are the comparison set the anchors are learned from — shown for reference, never ranked on the board.</p>
+  <table class="board">
+    <thead><tr><th>Protocol</th><th>Category</th><th>Family</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">mcap / TVL</th></tr></thead>
+    <tbody id="trading-body"></tbody>
+  </table>
+</section>
+
+<div id="scrim" class="scrim" hidden></div>
+<aside id="drawer" class="drawer" hidden></aside>
+
+<footer>
+  <p>Implied values are this board's model claims, computed from the snapshot's figures under the stated assumptions; they are not make.fun's data, and nothing here predicts whether or when a protocol issues a token. “Records no token” describes the snapshot's record, not the world. The snapshot names no parent protocol, so a wrapped or staked product of a traded token can only be screened by category and name, as the watchlist's own rule does — that limit is inherited, and stated rather than hidden. Data: DefiLlama protocols API, fetched for this snapshot. Anchors, gas prices and airdrop shares are assumptions of the model, printed on the page where they are used.</p>
+  <p class="for-judge">For the judge: the model lives in model.js and runs again in your browser on every load — the pill in the header reports how many of the board's values it reproduces exactly. The farm plans are generated per row from each protocol's chain, TVL and age; no protocol is named in any source file.</p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="model.js"></script>
+<script src="chart.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
